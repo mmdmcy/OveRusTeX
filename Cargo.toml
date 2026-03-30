@@ -1,0 +1,18 @@
+[package]
+name = "overustex"
+version = "0.1.0"
+edition = "2024"
+description = "A fast, lightweight desktop LaTeX editor with integrated PDF preview"
+readme = "README.md"
+repository = "https://github.com/mmdmcy/OveRusTeX"
+keywords = ["latex", "tex", "editor", "pdf", "desktop"]
+categories = ["gui", "text-editors"]
+
+[dependencies]
+anyhow = "1.0"
+dirs = "6.0"
+rfd = "0.15"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+tao = "0.34"
+wry = "0.53"

@@ -1,0 +1,8 @@
+/target
+/.overustex
+*.aux
+*.log
+*.synctex.gz
+.__overustex_preview__.tex
+.DS_Store
+Thumbs.db
