@@ -1399,6 +1399,44 @@ fn parse_range_header(range_header: &str, total_len: usize) -> Option<(usize, us
     Some((start, end))
 }
 
+fn ok_response(content_type: &str, body: &[u8]) -> Response<Cow<'static, [u8]>> {
+    response_with_status(StatusCode::OK, content_type, Cow::Owned(body.to_vec()))
+}
+
+fn not_found_response(message: &str) -> Response<Cow<'static, [u8]>> {
+    response_with_status(
+        StatusCode::NOT_FOUND,
+        "text/plain; charset=utf-8",
+        Cow::Owned(message.as_bytes().to_vec()),
+    )
+}
+
+fn internal_error_response(message: &str) -> Response<Cow<'static, [u8]>> {
+    response_with_status(
+        StatusCode::INTERNAL_SERVER_ERROR,
+        "text/plain; charset=utf-8",
+        Cow::Owned(message.as_bytes().to_vec()),
+    )
+}
+
+fn response_with_status(
+    status: StatusCode,
+    content_type: &str,
+    body: Cow<'static, [u8]>,
+) -> Response<Cow<'static, [u8]>> {
+    Response::builder()
+        .status(status)
+        .header(CONTENT_TYPE, content_type)
+        .body(body)
+        .unwrap_or_else(|_| {
+            Response::builder()
+                .status(StatusCode::INTERNAL_SERVER_ERROR)
+                .header(CONTENT_TYPE, "text/plain; charset=utf-8")
+                .body(Cow::Borrowed(&b"response build error"[..]))
+                .expect("static fallback response should build")
+        })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1441,42 +1479,4 @@ mod tests {
             document_cache_dir(&workspace_root, Some(Path::new("/tmp/project/main.tex")))
         );
     }
-}
-
-fn ok_response(content_type: &str, body: &[u8]) -> Response<Cow<'static, [u8]>> {
-    response_with_status(StatusCode::OK, content_type, Cow::Owned(body.to_vec()))
-}
-
-fn not_found_response(message: &str) -> Response<Cow<'static, [u8]>> {
-    response_with_status(
-        StatusCode::NOT_FOUND,
-        "text/plain; charset=utf-8",
-        Cow::Owned(message.as_bytes().to_vec()),
-    )
-}
-
-fn internal_error_response(message: &str) -> Response<Cow<'static, [u8]>> {
-    response_with_status(
-        StatusCode::INTERNAL_SERVER_ERROR,
-        "text/plain; charset=utf-8",
-        Cow::Owned(message.as_bytes().to_vec()),
-    )
-}
-
-fn response_with_status(
-    status: StatusCode,
-    content_type: &str,
-    body: Cow<'static, [u8]>,
-) -> Response<Cow<'static, [u8]>> {
-    Response::builder()
-        .status(status)
-        .header(CONTENT_TYPE, content_type)
-        .body(body)
-        .unwrap_or_else(|_| {
-            Response::builder()
-                .status(StatusCode::INTERNAL_SERVER_ERROR)
-                .header(CONTENT_TYPE, "text/plain; charset=utf-8")
-                .body(Cow::Borrowed(&b"response build error"[..]))
-                .expect("static fallback response should build")
-        })
 }
