@@ -578,13 +578,6 @@
         );
       }
 
-      function toFullPath(relativePath) {
-        if (!state.workspaceRoot) {
-          return relativePath;
-        }
-        return `${state.workspaceRoot}\\${relativePath.replaceAll("/", "\\")}`;
-      }
-
       function insertAtCursor(text) {
         const start = editor.selectionStart;
         const end = editor.selectionEnd;
@@ -628,7 +621,7 @@
           if (entry.kind === "tex" && confirmDiscard()) {
             send({
               cmd: "open_workspace_file",
-              path: toFullPath(entry.relative_path),
+              path: entry.relative_path,
             });
           }
         });

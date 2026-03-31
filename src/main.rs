@@ -2,8 +2,10 @@
 
 use std::{
     borrow::Cow,
+    collections::hash_map::DefaultHasher,
     ffi::OsStr,
     fs,
+    hash::{Hash, Hasher},
     path::{Path, PathBuf},
     process::{Command, Output},
     sync::{Arc, Mutex},
@@ -26,8 +28,11 @@ use wry::{
 
 const APP_URL: &str = "overustex://app/index.html";
 const UI_HTML: &str = include_str!("ui.html");
-const OVERUSTEX_DIR_NAME: &str = ".overustex";
-const HISTORY_LIMIT: usize = 40;
+const APP_STORAGE_DIR_NAME: &str = "OverusTeX";
+const LEGACY_WORKSPACE_DIR_NAME: &str = ".overustex";
+const HISTORY_LIMIT: usize = 16;
+const PREVIEW_LIMIT: usize = 6;
+const DOCUMENT_CACHE_LIMIT: usize = 24;
 #[cfg(target_os = "windows")]
 const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 
@@ -51,7 +56,7 @@ Hello from OverusTeX.
 
 struct AppState {
     current_file: Option<PathBuf>,
-    workspace_dir: PathBuf,
+    workspace_root: PathBuf,
     active_build_id: u64,
 }
 
@@ -59,7 +64,7 @@ impl Default for AppState {
     fn default() -> Self {
         Self {
             current_file: None,
-            workspace_dir: default_workspace_dir(),
+            workspace_root: default_workspace_root(),
             active_build_id: 0,
         }
     }
@@ -159,7 +164,9 @@ enum BuildAction {
 
 struct BuildPlan {
     build_id: u64,
-    workspace_dir: PathBuf,
+    source_dir: PathBuf,
+    cache_dir: PathBuf,
+    temp_source_path: PathBuf,
     source_file_name: String,
     job_name: String,
     contents: String,
@@ -246,9 +253,9 @@ fn main() -> Result<()> {
                             } else {
                                 None
                             };
-                        let workspace_root = state.workspace_dir.display().to_string();
+                        let workspace_root = state.workspace_root.display().to_string();
                         let workspace_items =
-                            workspace_entries(&state.workspace_dir).unwrap_or_default();
+                            workspace_entries(&state.workspace_root).unwrap_or_default();
                         (preview_url, workspace_root, workspace_items)
                     } else {
                         (None, String::new(), Vec::new())
@@ -295,14 +302,14 @@ fn handle_ipc(
                 let contents = fs::read_to_string(&default_file).with_context(|| {
                     format!("failed to read startup file {}", default_file.display())
                 })?;
-                let workspace_dir = default_file
+                let workspace_root = default_file
                     .parent()
                     .map(Path::to_path_buf)
-                    .unwrap_or_else(default_workspace_dir);
+                    .unwrap_or_else(default_workspace_root);
                 {
                     let mut state = lock_app_state(app_state)?;
                     state.current_file = Some(default_file.clone());
-                    state.workspace_dir = workspace_dir.clone();
+                    state.workspace_root = workspace_root.clone();
                 }
                 {
                     let mut state = lock_protocol_state(protocol_state)?;
@@ -317,20 +324,19 @@ fn handle_ipc(
                         preview_url: None,
                         preview_label: "waiting for build".to_string(),
                         note: format!(
-                            "Loaded {}. Run builds an unsaved working copy in {}.",
-                            default_file.display(),
-                            overustex_dir(&workspace_dir).display()
+                            "Loaded {}. Run builds an internal working copy without writing next to the source file.",
+                            default_file.display()
                         ),
-                        workspace_root: workspace_dir.display().to_string(),
-                        workspace_entries: workspace_entries(&workspace_dir)?,
+                        workspace_root: workspace_root.display().to_string(),
+                        workspace_entries: workspace_entries(&workspace_root)?,
                     },
                 );
             } else {
-                let workspace_dir = default_workspace_dir();
+                let workspace_root = default_workspace_root();
                 {
                     let mut state = lock_app_state(app_state)?;
                     state.current_file = None;
-                    state.workspace_dir = workspace_dir.clone();
+                    state.workspace_root = workspace_root.clone();
                 }
                 {
                     let mut state = lock_protocol_state(protocol_state)?;
@@ -345,17 +351,17 @@ fn handle_ipc(
                         preview_url: None,
                         preview_label: "waiting for build".to_string(),
                         note: "New document ready. Press Run to build a preview without saving the .tex file.".to_string(),
-                        workspace_root: workspace_dir.display().to_string(),
-                        workspace_entries: workspace_entries(&workspace_dir)?,
+                        workspace_root: workspace_root.display().to_string(),
+                        workspace_entries: workspace_entries(&workspace_root)?,
                     },
                 );
             }
         }
         IpcCommand::NewDocument => {
-            let workspace_dir = {
+            let workspace_root = {
                 let mut state = lock_app_state(app_state)?;
                 state.current_file = None;
-                state.workspace_dir.clone()
+                state.workspace_root.clone()
             };
             {
                 let mut state = lock_protocol_state(protocol_state)?;
@@ -370,13 +376,13 @@ fn handle_ipc(
                     preview_url: None,
                     preview_label: "waiting for build".to_string(),
                     note: "Started a fresh LaTeX buffer.".to_string(),
-                    workspace_root: workspace_dir.display().to_string(),
-                    workspace_entries: workspace_entries(&workspace_dir)?,
+                    workspace_root: workspace_root.display().to_string(),
+                    workspace_entries: workspace_entries(&workspace_root)?,
                 },
             );
         }
         IpcCommand::OpenFolder => {
-            let current_dir = lock_app_state(app_state)?.workspace_dir.clone();
+            let current_dir = lock_app_state(app_state)?.workspace_root.clone();
             if let Some(folder) = FileDialog::new().set_directory(current_dir).pick_folder() {
                 let main_tex = folder.join("main.tex");
                 if main_tex.exists() {
@@ -385,7 +391,7 @@ fn handle_ipc(
                     {
                         let mut state = lock_app_state(app_state)?;
                         state.current_file = Some(main_tex.clone());
-                        state.workspace_dir = folder.clone();
+                        state.workspace_root = folder.clone();
                     }
                     {
                         let mut state = lock_protocol_state(protocol_state)?;
@@ -411,7 +417,7 @@ fn handle_ipc(
                     {
                         let mut state = lock_app_state(app_state)?;
                         state.current_file = None;
-                        state.workspace_dir = folder.clone();
+                        state.workspace_root = folder.clone();
                     }
                     {
                         let mut state = lock_protocol_state(protocol_state)?;
@@ -434,22 +440,19 @@ fn handle_ipc(
             }
         }
         IpcCommand::OpenFile => {
-            let current_dir = lock_app_state(app_state)?.workspace_dir.clone();
+            let current_root = lock_app_state(app_state)?.workspace_root.clone();
             if let Some(path) = FileDialog::new()
                 .add_filter("LaTeX", &["tex"])
-                .set_directory(current_dir)
+                .set_directory(&current_root)
                 .pick_file()
             {
                 let contents = fs::read_to_string(&path)
                     .with_context(|| format!("failed to read {}", path.display()))?;
-                let workspace_dir = path
-                    .parent()
-                    .map(Path::to_path_buf)
-                    .unwrap_or_else(default_workspace_dir);
+                let workspace_root = workspace_root_for_path(&current_root, &path);
                 {
                     let mut state = lock_app_state(app_state)?;
                     state.current_file = Some(path.clone());
-                    state.workspace_dir = workspace_dir.clone();
+                    state.workspace_root = workspace_root.clone();
                 }
                 {
                     let mut state = lock_protocol_state(protocol_state)?;
@@ -464,32 +467,29 @@ fn handle_ipc(
                         preview_url: None,
                         preview_label: "waiting for build".to_string(),
                         note: format!("Opened {}.", path.display()),
-                        workspace_root: workspace_dir.display().to_string(),
-                        workspace_entries: workspace_entries(&workspace_dir)?,
+                        workspace_root: workspace_root.display().to_string(),
+                        workspace_entries: workspace_entries(&workspace_root)?,
                     },
                 );
             }
         }
         IpcCommand::OpenWorkspaceFile { path } => {
-            let workspace_dir = lock_app_state(app_state)?.workspace_dir.clone();
+            let current_root = lock_app_state(app_state)?.workspace_root.clone();
             let path = {
                 let candidate = PathBuf::from(&path);
                 if candidate.is_absolute() {
                     candidate
                 } else {
-                    workspace_dir.join(candidate)
+                    current_root.join(candidate)
                 }
             };
             let contents = fs::read_to_string(&path)
                 .with_context(|| format!("failed to read {}", path.display()))?;
-            let workspace_dir = path
-                .parent()
-                .map(Path::to_path_buf)
-                .unwrap_or_else(default_workspace_dir);
+            let workspace_root = workspace_root_for_path(&current_root, &path);
             {
                 let mut state = lock_app_state(app_state)?;
                 state.current_file = Some(path.clone());
-                state.workspace_dir = workspace_dir.clone();
+                state.workspace_root = workspace_root.clone();
             }
             {
                 let mut state = lock_protocol_state(protocol_state)?;
@@ -504,15 +504,15 @@ fn handle_ipc(
                     preview_url: None,
                     preview_label: "waiting for build".to_string(),
                     note: format!("Opened {}.", path.display()),
-                    workspace_root: workspace_dir.display().to_string(),
-                    workspace_entries: workspace_entries(&workspace_dir)?,
+                    workspace_root: workspace_root.display().to_string(),
+                    workspace_entries: workspace_entries(&workspace_root)?,
                 },
             );
         }
         IpcCommand::Save { contents } => {
-            let (current_path, workspace_dir) = {
+            let (current_path, workspace_root) = {
                 let state = lock_app_state(app_state)?;
-                (state.current_file.clone(), state.workspace_dir.clone())
+                (state.current_file.clone(), state.workspace_root.clone())
             };
             let suggested_name = current_path
                 .as_ref()
@@ -520,20 +520,17 @@ fn handle_ipc(
                 .map(|name| name.to_string_lossy().to_string())
                 .unwrap_or_else(|| "main.tex".to_string());
             let Some(path) =
-                current_path.or_else(|| choose_save_path(&workspace_dir, &suggested_name))
+                current_path.or_else(|| choose_save_path(&workspace_root, &suggested_name))
             else {
                 return Ok(());
             };
 
             save_document(&path, &contents)?;
-            let workspace_dir = path
-                .parent()
-                .map(Path::to_path_buf)
-                .unwrap_or(workspace_dir);
+            let workspace_root = workspace_root_for_path(&workspace_root, &path);
             {
                 let mut state = lock_app_state(app_state)?;
                 state.current_file = Some(path.clone());
-                state.workspace_dir = workspace_dir.clone();
+                state.workspace_root = workspace_root.clone();
             }
             let (preview_url, preview_label) = {
                 let state = lock_protocol_state(protocol_state)?;
@@ -554,16 +551,16 @@ fn handle_ipc(
                     note: format!("Saved {}.", path.display()),
                     preview_url,
                     preview_label,
-                    workspace_root: workspace_dir.display().to_string(),
-                    workspace_entries: workspace_entries(&workspace_dir)?,
+                    workspace_root: workspace_root.display().to_string(),
+                    workspace_entries: workspace_entries(&workspace_root)?,
                 },
             );
         }
         IpcCommand::SaveAs { contents } => {
-            let (workspace_dir, suggested_name) = {
+            let (workspace_root, suggested_name) = {
                 let state = lock_app_state(app_state)?;
                 (
-                    state.workspace_dir.clone(),
+                    state.workspace_root.clone(),
                     state
                         .current_file
                         .as_ref()
@@ -572,19 +569,16 @@ fn handle_ipc(
                         .unwrap_or_else(|| "main.tex".to_string()),
                 )
             };
-            let Some(path) = choose_save_path(&workspace_dir, &suggested_name) else {
+            let Some(path) = choose_save_path(&workspace_root, &suggested_name) else {
                 return Ok(());
             };
 
             save_document(&path, &contents)?;
-            let workspace_dir = path
-                .parent()
-                .map(Path::to_path_buf)
-                .unwrap_or(workspace_dir);
+            let workspace_root = workspace_root_for_path(&workspace_root, &path);
             {
                 let mut state = lock_app_state(app_state)?;
                 state.current_file = Some(path.clone());
-                state.workspace_dir = workspace_dir.clone();
+                state.workspace_root = workspace_root.clone();
             }
             let (preview_url, preview_label) = {
                 let state = lock_protocol_state(protocol_state)?;
@@ -605,8 +599,8 @@ fn handle_ipc(
                     note: format!("Saved {}.", path.display()),
                     preview_url,
                     preview_label,
-                    workspace_root: workspace_dir.display().to_string(),
-                    workspace_entries: workspace_entries(&workspace_dir)?,
+                    workspace_root: workspace_root.display().to_string(),
+                    workspace_entries: workspace_entries(&workspace_root)?,
                 },
             );
         }
@@ -616,7 +610,7 @@ fn handle_ipc(
                 state.active_build_id += 1;
                 build_plan_for(
                     state.active_build_id,
-                    &state.workspace_dir,
+                    &state.workspace_root,
                     state.current_file.as_deref(),
                     contents,
                     BuildAction::Preview,
@@ -625,11 +619,10 @@ fn handle_ipc(
             emit(
                 proxy,
                 FrontendEvent::BuildStarted {
-                    detail: "MiKTeX preview build in progress".to_string(),
+                    detail: "Preview build in progress".to_string(),
                     log: format!(
-                        "Building {} as an unsaved working copy in {} ...",
-                        build_plan.source_file_name,
-                        overustex_dir(&build_plan.workspace_dir).display()
+                        "Building {} as an internal working copy ...",
+                        build_plan.source_file_name
                     ),
                 },
             );
@@ -645,10 +638,10 @@ fn handle_ipc(
                 let mut state = lock_app_state(app_state)?;
                 state.active_build_id += 1;
                 let export_target =
-                    default_export_pdf_path(&state.workspace_dir, state.current_file.as_deref());
+                    default_export_pdf_path(&state.workspace_root, state.current_file.as_deref());
                 build_plan_for(
                     state.active_build_id,
-                    &state.workspace_dir,
+                    &state.workspace_root,
                     state.current_file.as_deref(),
                     contents,
                     BuildAction::ExportDefault(export_target),
@@ -669,8 +662,8 @@ fn handle_ipc(
             });
         }
         IpcCommand::SavePdfAs { contents } => {
-            let workspace_dir = lock_app_state(app_state)?.workspace_dir.clone();
-            let Some(target) = choose_pdf_save_path(&workspace_dir, "export.pdf") else {
+            let workspace_root = lock_app_state(app_state)?.workspace_root.clone();
+            let Some(target) = choose_pdf_save_path(&workspace_root, "export.pdf") else {
                 return Ok(());
             };
             let build_plan = {
@@ -678,7 +671,7 @@ fn handle_ipc(
                 state.active_build_id += 1;
                 build_plan_for(
                     state.active_build_id,
-                    &state.workspace_dir,
+                    &state.workspace_root,
                     state.current_file.as_deref(),
                     contents,
                     BuildAction::ExportTo(target),
@@ -708,53 +701,52 @@ fn handle_ipc(
 fn compile_document(plan: BuildPlan) -> BuildOutcome {
     let error_build_id = plan.build_id;
     let build = (|| -> Result<BuildOutcome> {
-        fs::create_dir_all(overustex_dir(&plan.workspace_dir)).with_context(|| {
+        fs::create_dir_all(document_cache_parent())
+            .with_context(|| format!("failed to create {}", document_cache_parent().display()))?;
+        prune_old_directories(&document_cache_parent(), DOCUMENT_CACHE_LIMIT)?;
+        fs::create_dir_all(&plan.cache_dir)
+            .with_context(|| format!("failed to create {}", plan.cache_dir.display()))?;
+        fs::create_dir_all(build_output_dir(&plan.cache_dir)).with_context(|| {
             format!(
                 "failed to create {}",
-                overustex_dir(&plan.workspace_dir).display()
+                build_output_dir(&plan.cache_dir).display()
             )
         })?;
-        fs::create_dir_all(build_output_dir(&plan.workspace_dir)).with_context(|| {
+        fs::create_dir_all(preview_output_dir(&plan.cache_dir)).with_context(|| {
             format!(
                 "failed to create {}",
-                build_output_dir(&plan.workspace_dir).display()
-            )
-        })?;
-        fs::create_dir_all(preview_output_dir(&plan.workspace_dir)).with_context(|| {
-            format!(
-                "failed to create {}",
-                preview_output_dir(&plan.workspace_dir).display()
+                preview_output_dir(&plan.cache_dir).display()
             )
         })?;
 
-        write_snapshot(&plan.workspace_dir, &plan.job_name, &plan.contents)?;
+        write_snapshot(&plan.cache_dir, &plan.job_name, &plan.contents)?;
 
-        let preview_source_path = preview_source_path(&plan.workspace_dir);
-        save_document(&preview_source_path, &plan.contents)?;
-
-        let source_name = preview_source_path
-            .file_name()
-            .ok_or_else(|| anyhow!("source file has no file name"))?;
+        save_document(&plan.temp_source_path, &plan.contents)?;
 
         let (detail, output, used_engine) = if can_use_latexmk() {
             let mut command = Command::new("latexmk");
             command
-                .current_dir(&plan.workspace_dir)
+                .current_dir(&plan.source_dir)
                 .arg("-pdf")
                 .arg("-interaction=nonstopmode")
                 .arg("-synctex=1")
                 .arg("-file-line-error")
                 .arg(format!(
                     "-outdir={}",
-                    build_output_dir(&plan.workspace_dir).display()
+                    build_output_dir(&plan.cache_dir).display()
                 ))
                 .arg(format!("-jobname={}", plan.job_name))
-                .arg(source_name);
+                .arg(&plan.temp_source_path);
+            apply_tex_inputs(&mut command, &plan.source_dir);
             match run_command_capture_hidden(&mut command) {
                 Ok(output) => ("latexmk".to_string(), output, "latexmk".to_string()),
                 Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-                    let output =
-                        run_pdflatex_twice(&plan.workspace_dir, source_name, &plan.job_name)?;
+                    let output = run_pdflatex_twice(
+                        &plan.source_dir,
+                        &plan.cache_dir,
+                        &plan.temp_source_path,
+                        &plan.job_name,
+                    )?;
                     ("pdflatex".to_string(), output, "pdflatex".to_string())
                 }
                 Err(error) => {
@@ -762,19 +754,22 @@ fn compile_document(plan: BuildPlan) -> BuildOutcome {
                 }
             }
         } else {
-            let output = run_pdflatex_twice(&plan.workspace_dir, source_name, &plan.job_name)?;
+            let output = run_pdflatex_twice(
+                &plan.source_dir,
+                &plan.cache_dir,
+                &plan.temp_source_path,
+                &plan.job_name,
+            )?;
             ("pdflatex".to_string(), output, "pdflatex".to_string())
         };
 
-        let _ = fs::remove_file(&preview_source_path);
+        let _ = fs::remove_file(&plan.temp_source_path);
 
         let log = format_command_output(&used_engine, &output);
-        let built_pdf =
-            build_output_dir(&plan.workspace_dir).join(format!("{}.pdf", plan.job_name));
+        let built_pdf = build_output_dir(&plan.cache_dir).join(format!("{}.pdf", plan.job_name));
 
         if output.status.success() && built_pdf.exists() {
-            let preview_pdf =
-                create_preview_snapshot(&plan.workspace_dir, &plan.job_name, &built_pdf)?;
+            let preview_pdf = create_preview_snapshot(&plan.cache_dir, &plan.job_name, &built_pdf)?;
             let exported_pdf_path = match &plan.action {
                 BuildAction::Preview => None,
                 BuildAction::ExportDefault(target) | BuildAction::ExportTo(target) => {
@@ -835,7 +830,12 @@ fn can_use_latexmk() -> bool {
         .unwrap_or(false)
 }
 
-fn run_pdflatex_twice(source_dir: &Path, source_name: &OsStr, job_name: &str) -> Result<Output> {
+fn run_pdflatex_twice(
+    source_dir: &Path,
+    cache_dir: &Path,
+    source_path: &Path,
+    job_name: &str,
+) -> Result<Output> {
     let mut first_command = Command::new("pdflatex");
     first_command
         .current_dir(source_dir)
@@ -844,10 +844,11 @@ fn run_pdflatex_twice(source_dir: &Path, source_name: &OsStr, job_name: &str) ->
         .arg("-file-line-error")
         .arg(format!(
             "-output-directory={}",
-            build_output_dir(source_dir).display()
+            build_output_dir(cache_dir).display()
         ))
         .arg(format!("-jobname={job_name}"))
-        .arg(source_name);
+        .arg(source_path);
+    apply_tex_inputs(&mut first_command, source_dir);
     let first =
         run_command_capture_hidden(&mut first_command).context("failed to launch pdflatex")?;
 
@@ -863,10 +864,11 @@ fn run_pdflatex_twice(source_dir: &Path, source_name: &OsStr, job_name: &str) ->
         .arg("-file-line-error")
         .arg(format!(
             "-output-directory={}",
-            build_output_dir(source_dir).display()
+            build_output_dir(cache_dir).display()
         ))
         .arg(format!("-jobname={job_name}"))
-        .arg(source_name);
+        .arg(source_path);
+    apply_tex_inputs(&mut second_command, source_dir);
     let second =
         run_command_capture_hidden(&mut second_command).context("failed to launch pdflatex")?;
 
@@ -899,7 +901,7 @@ fn choose_pdf_save_path(base_dir: &Path, suggested_file_name: &str) -> Option<Pa
 
 fn build_plan_for(
     build_id: u64,
-    workspace_dir: &Path,
+    workspace_root: &Path,
     current_file: Option<&Path>,
     contents: String,
     action: BuildAction,
@@ -912,10 +914,18 @@ fn build_plan_for(
         .and_then(Path::file_stem)
         .map(|name| name.to_string_lossy().to_string())
         .unwrap_or_else(|| "main".to_string());
+    let source_dir = current_file
+        .and_then(Path::parent)
+        .map(Path::to_path_buf)
+        .unwrap_or_else(|| workspace_root.to_path_buf());
+    let cache_dir = document_cache_dir(workspace_root, current_file);
+    let temp_source_path = preview_source_path(&cache_dir, &source_file_name);
 
     BuildPlan {
         build_id,
-        workspace_dir: workspace_dir.to_path_buf(),
+        source_dir,
+        cache_dir,
+        temp_source_path,
         source_file_name,
         job_name: sanitize_job_name(&stem),
         contents,
@@ -923,30 +933,56 @@ fn build_plan_for(
     }
 }
 
-fn default_export_pdf_path(workspace_dir: &Path, current_file: Option<&Path>) -> PathBuf {
+fn default_export_pdf_path(workspace_root: &Path, current_file: Option<&Path>) -> PathBuf {
     current_file
         .map(|path| path.with_extension("pdf"))
-        .unwrap_or_else(|| workspace_dir.join("main.pdf"))
+        .unwrap_or_else(|| workspace_root.join("main.pdf"))
 }
 
-fn overustex_dir(workspace_dir: &Path) -> PathBuf {
-    workspace_dir.join(OVERUSTEX_DIR_NAME)
+fn app_cache_dir() -> PathBuf {
+    dirs::cache_dir()
+        .or_else(dirs::data_local_dir)
+        .unwrap_or_else(std::env::temp_dir)
+        .join(APP_STORAGE_DIR_NAME)
 }
 
-fn build_output_dir(workspace_dir: &Path) -> PathBuf {
-    overustex_dir(workspace_dir).join("build")
+fn document_cache_parent() -> PathBuf {
+    app_cache_dir().join("documents")
 }
 
-fn preview_output_dir(workspace_dir: &Path) -> PathBuf {
-    overustex_dir(workspace_dir).join("preview")
+fn document_cache_dir(workspace_root: &Path, current_file: Option<&Path>) -> PathBuf {
+    let identity = current_file
+        .map(|path| format!("file:{}", path.display()))
+        .unwrap_or_else(|| format!("untitled:{}", workspace_root.display()));
+    let label = current_file
+        .and_then(Path::file_stem)
+        .map(|name| name.to_string_lossy().to_string())
+        .or_else(|| {
+            workspace_root
+                .file_name()
+                .map(|name| name.to_string_lossy().to_string())
+        })
+        .unwrap_or_else(|| "untitled".to_string());
+    let mut hasher = DefaultHasher::new();
+    identity.hash(&mut hasher);
+    let digest = hasher.finish();
+    document_cache_parent().join(format!("{}-{digest:016x}", sanitize_job_name(&label)))
 }
 
-fn history_dir(workspace_dir: &Path) -> PathBuf {
-    overustex_dir(workspace_dir).join("history")
+fn build_output_dir(cache_dir: &Path) -> PathBuf {
+    cache_dir.join("build")
 }
 
-fn preview_source_path(workspace_dir: &Path) -> PathBuf {
-    workspace_dir.join(".__overustex_preview__.tex")
+fn preview_output_dir(cache_dir: &Path) -> PathBuf {
+    cache_dir.join("preview")
+}
+
+fn history_dir(cache_dir: &Path) -> PathBuf {
+    cache_dir.join("history")
+}
+
+fn preview_source_path(cache_dir: &Path, source_file_name: &str) -> PathBuf {
+    cache_dir.join("source").join(source_file_name)
 }
 
 fn sanitize_job_name(value: &str) -> String {
@@ -968,8 +1004,8 @@ fn sanitize_job_name(value: &str) -> String {
     }
 }
 
-fn write_snapshot(workspace_dir: &Path, job_name: &str, contents: &str) -> Result<()> {
-    let history_dir = history_dir(workspace_dir);
+fn write_snapshot(cache_dir: &Path, job_name: &str, contents: &str) -> Result<()> {
+    let history_dir = history_dir(cache_dir);
     fs::create_dir_all(&history_dir)
         .with_context(|| format!("failed to create {}", history_dir.display()))?;
     let snapshot_name = format!("{:020}-{}.tex", unix_timestamp_millis(), job_name);
@@ -978,12 +1014,8 @@ fn write_snapshot(workspace_dir: &Path, job_name: &str, contents: &str) -> Resul
     Ok(())
 }
 
-fn create_preview_snapshot(
-    workspace_dir: &Path,
-    job_name: &str,
-    built_pdf: &Path,
-) -> Result<PathBuf> {
-    let preview_dir = preview_output_dir(workspace_dir);
+fn create_preview_snapshot(cache_dir: &Path, job_name: &str, built_pdf: &Path) -> Result<PathBuf> {
+    let preview_dir = preview_output_dir(cache_dir);
     fs::create_dir_all(&preview_dir)
         .with_context(|| format!("failed to create {}", preview_dir.display()))?;
     let preview_path = preview_dir.join(format!("{job_name}-{}.pdf", unix_timestamp_millis()));
@@ -994,7 +1026,7 @@ fn create_preview_snapshot(
             built_pdf.display()
         )
     })?;
-    prune_old_files(&preview_dir, 8)?;
+    prune_old_files(&preview_dir, PREVIEW_LIMIT)?;
     Ok(preview_path)
 }
 
@@ -1023,7 +1055,42 @@ fn prune_old_files(directory: &Path, keep: usize) -> Result<()> {
     Ok(())
 }
 
+fn prune_old_directories(directory: &Path, keep: usize) -> Result<()> {
+    if !directory.exists() {
+        return Ok(());
+    }
+
+    let mut entries = fs::read_dir(directory)
+        .with_context(|| format!("failed to read {}", directory.display()))?
+        .filter_map(|entry| entry.ok())
+        .filter(|entry| {
+            entry
+                .file_type()
+                .map(|file_type| file_type.is_dir())
+                .unwrap_or(false)
+        })
+        .collect::<Vec<_>>();
+    entries.sort_by_key(|entry| {
+        entry
+            .metadata()
+            .and_then(|metadata| metadata.modified())
+            .ok()
+    });
+    if entries.len() <= keep {
+        return Ok(());
+    }
+
+    let remove_count = entries.len() - keep;
+    for entry in entries.into_iter().take(remove_count) {
+        let _ = fs::remove_dir_all(entry.path());
+    }
+    Ok(())
+}
+
 fn workspace_entries(root: &Path) -> Result<Vec<WorkspaceEntry>> {
+    if !root.exists() {
+        return Ok(Vec::new());
+    }
     workspace_entries_recursive(root, root, 0)
 }
 
@@ -1042,7 +1109,7 @@ fn workspace_entries_recursive(
         .filter(|entry| {
             let name = entry.file_name();
             let name = name.to_string_lossy();
-            name != OVERUSTEX_DIR_NAME && name != ".git" && name != "target"
+            name != LEGACY_WORKSPACE_DIR_NAME && name != ".git" && name != "target"
         })
         .collect::<Vec<_>>();
 
@@ -1103,6 +1170,35 @@ fn workspace_kind(path: &Path, is_dir: bool) -> String {
     }
 }
 
+fn workspace_root_for_path(current_root: &Path, path: &Path) -> PathBuf {
+    if path.starts_with(current_root) {
+        current_root.to_path_buf()
+    } else {
+        path.parent()
+            .map(Path::to_path_buf)
+            .unwrap_or_else(default_workspace_root)
+    }
+}
+
+fn apply_tex_inputs(command: &mut Command, source_dir: &Path) {
+    prepend_tex_path_env(command, "TEXINPUTS", source_dir);
+    prepend_tex_path_env(command, "BIBINPUTS", source_dir);
+    prepend_tex_path_env(command, "BSTINPUTS", source_dir);
+}
+
+fn prepend_tex_path_env(command: &mut Command, key: &str, source_dir: &Path) {
+    let separator = if cfg!(windows) { ';' } else { ':' };
+    let existing = std::env::var_os(key)
+        .map(|value| value.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    let mut value = source_dir.display().to_string();
+    value.push(separator);
+    if !existing.is_empty() {
+        value.push_str(&existing);
+    }
+    command.env(key, value);
+}
+
 fn run_command_capture_hidden(command: &mut Command) -> std::io::Result<Output> {
     #[cfg(target_os = "windows")]
     {
@@ -1111,15 +1207,15 @@ fn run_command_capture_hidden(command: &mut Command) -> std::io::Result<Output> 
     command.output()
 }
 
-fn default_workspace_dir() -> PathBuf {
+fn default_workspace_root() -> PathBuf {
     dirs::document_dir()
         .or_else(|| std::env::current_dir().ok())
         .unwrap_or_else(|| PathBuf::from("."))
-        .join("OverusTeX")
+        .join(APP_STORAGE_DIR_NAME)
 }
 
 fn default_run_path() -> PathBuf {
-    default_workspace_dir().join("main.tex")
+    default_workspace_root().join("main.tex")
 }
 
 fn file_name(path: Option<&Path>) -> String {
@@ -1301,6 +1397,50 @@ fn parse_range_header(range_header: &str, total_len: usize) -> Option<(usize, us
     }
 
     Some((start, end))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn nested_file_keeps_existing_workspace_root() {
+        let workspace_root = PathBuf::from("/tmp/project");
+        let nested_file = workspace_root.join("chapters/intro/main.tex");
+        assert_eq!(
+            workspace_root_for_path(&workspace_root, &nested_file),
+            workspace_root
+        );
+    }
+
+    #[test]
+    fn external_file_switches_workspace_root_to_its_parent() {
+        let workspace_root = PathBuf::from("/tmp/project");
+        let external_file = PathBuf::from("/tmp/other/main.tex");
+        assert_eq!(
+            workspace_root_for_path(&workspace_root, &external_file),
+            PathBuf::from("/tmp/other")
+        );
+    }
+
+    #[test]
+    fn missing_workspace_root_renders_as_empty_tree() {
+        let missing =
+            std::env::temp_dir().join(format!("overustex-missing-{}", unix_timestamp_millis()));
+        assert!(workspace_entries(&missing).unwrap().is_empty());
+    }
+
+    #[test]
+    fn document_cache_dir_is_stable_per_document_identity() {
+        let workspace_root = PathBuf::from("/tmp/project");
+        let first = document_cache_dir(&workspace_root, Some(Path::new("/tmp/project/main.tex")));
+        let second = document_cache_dir(&workspace_root, Some(Path::new("/tmp/project/notes.tex")));
+        assert_ne!(first, second);
+        assert_eq!(
+            first,
+            document_cache_dir(&workspace_root, Some(Path::new("/tmp/project/main.tex")))
+        );
+    }
 }
 
 fn ok_response(content_type: &str, body: &[u8]) -> Response<Cow<'static, [u8]>> {

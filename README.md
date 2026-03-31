@@ -5,7 +5,7 @@ A fast desktop LaTeX editor in Rust with:
 - a clean split layout with workspace explorer, editor, and preview
 - a native desktop shell with a lightweight webview UI
 - a one-click LaTeX build flow for previewing and exporting PDFs
-- a short-term snapshot history in `.overustex/history`
+- internal preview/build caches managed by the app instead of hidden folders next to your `.tex`
 - CI for Windows, macOS, and Linux builds
 
 ## Features
@@ -14,6 +14,7 @@ A fast desktop LaTeX editor in Rust with:
 - a fast plain-text editor in the middle
 - a PDF preview pane on the right
 - `Run` builds an unsaved working copy instead of silently saving your `.tex`
+- opening `.tex` files from nested folders keeps the current workspace root stable
 - an embedded PDF preview on the right
 - quick `Export PDF` and `Save PDF As` actions
 - build output at the bottom
@@ -48,8 +49,8 @@ target\release\overustex.exe
 
 ## Notes
 
-- `Run` does not save your `.tex` file. It compiles a temporary working copy in a hidden `.overustex` folder inside the workspace.
-- OverusTeX keeps short-term snapshot backups in `.overustex\history`.
+- `Run` does not save your `.tex` file. It compiles a temporary working copy inside OverusTeX's cache storage instead of creating hidden folders next to your source files.
+- OverusTeX keeps short-term snapshot backups in that internal cache and prunes old entries automatically.
 - `Save` writes the current file. `Save As` lets you choose a different `.tex` file.
 - `Export PDF` writes a PDF next to the current `.tex` file, or to `main.pdf` in the workspace when the file is still untitled.
 - `Save PDF As` lets you choose a PDF target explicitly.
