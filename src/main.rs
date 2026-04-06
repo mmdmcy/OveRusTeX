@@ -704,6 +704,8 @@ fn compile_document(plan: BuildPlan) -> BuildOutcome {
         fs::create_dir_all(document_cache_parent())
             .with_context(|| format!("failed to create {}", document_cache_parent().display()))?;
         prune_old_directories(&document_cache_parent(), DOCUMENT_CACHE_LIMIT)?;
+        fs::create_dir_all(&plan.source_dir)
+            .with_context(|| format!("failed to create {}", plan.source_dir.display()))?;
         fs::create_dir_all(&plan.cache_dir)
             .with_context(|| format!("failed to create {}", plan.cache_dir.display()))?;
         fs::create_dir_all(build_output_dir(&plan.cache_dir)).with_context(|| {
