@@ -19,6 +19,9 @@
         --accent: #0e639c;
         --accent-strong: #1177bb;
         --success: #89d185;
+        --divider-size: 6px;
+        --sidebar-width: 240px;
+        --preview-width: 420px;
         --font-ui: "Segoe UI Variable Text", "Segoe UI", system-ui, sans-serif;
         --font-code: "Cascadia Code", "Consolas", "Courier New", monospace;
       }
@@ -40,6 +43,12 @@
       body {
         display: grid;
         grid-template-rows: 44px minmax(0, 1fr) 168px 26px;
+      }
+
+      body.is-resizing,
+      body.is-resizing * {
+        cursor: col-resize !important;
+        user-select: none !important;
       }
 
       button {
@@ -84,7 +93,6 @@
       .toolbar {
         display: flex;
         align-items: center;
-        justify-content: space-between;
         gap: 16px;
         padding: 0 12px;
         border-bottom: 1px solid var(--border);
@@ -93,11 +101,17 @@
 
       .toolbar-left,
       .toolbar-right,
+      .toolbar-actions,
       .panel-actions {
         display: flex;
         align-items: center;
         gap: 8px;
         min-width: 0;
+      }
+
+      .toolbar-right {
+        flex: 1 1 auto;
+        justify-content: flex-end;
       }
 
       .app-title {
@@ -109,7 +123,7 @@
 
       .path-pill {
         min-width: 0;
-        max-width: 520px;
+        max-width: min(520px, 100%);
         overflow: hidden;
         text-overflow: ellipsis;
         white-space: nowrap;
@@ -122,8 +136,36 @@
 
       .workspace {
         display: grid;
-        grid-template-columns: 220px minmax(320px, 1fr) minmax(320px, 1fr);
+        grid-template-columns:
+          var(--sidebar-width)
+          var(--divider-size)
+          minmax(320px, 1fr)
+          var(--divider-size)
+          var(--preview-width);
         min-height: 0;
+      }
+
+      .pane-divider {
+        position: relative;
+        min-height: 0;
+        cursor: col-resize;
+        touch-action: none;
+      }
+
+      .pane-divider::after {
+        content: "";
+        position: absolute;
+        top: 0;
+        bottom: 0;
+        left: calc(50% - 0.5px);
+        width: 1px;
+        background: var(--border);
+        transition: background 120ms ease;
+      }
+
+      .pane-divider:hover::after,
+      .pane-divider.is-resizing::after {
+        background: var(--accent-strong);
       }
 
       .pane {
@@ -132,10 +174,6 @@
         display: grid;
         grid-template-rows: 34px minmax(0, 1fr);
         background: var(--panel);
-      }
-
-      .pane + .pane {
-        border-left: 1px solid var(--border);
       }
 
       .pane-header {
@@ -156,6 +194,56 @@
         overflow: hidden;
         text-overflow: ellipsis;
         white-space: nowrap;
+      }
+
+      .open-menu {
+        position: relative;
+      }
+
+      .button-caret {
+        display: inline-block;
+        margin-left: 4px;
+        font-size: 10px;
+        transform: translateY(-1px);
+      }
+
+      .open-menu-panel {
+        position: absolute;
+        top: calc(100% + 8px);
+        left: 0;
+        z-index: 10;
+        width: 200px;
+        padding: 6px;
+        border: 1px solid var(--border);
+        border-radius: 10px;
+        background: #1d1d1f;
+        box-shadow: 0 14px 28px rgba(0, 0, 0, 0.34);
+      }
+
+      .open-menu-panel[hidden] {
+        display: none;
+      }
+
+      .menu-option {
+        display: grid;
+        gap: 2px;
+        width: 100%;
+        padding: 8px 10px;
+        border: 0;
+        border-radius: 7px;
+        background: transparent;
+        color: inherit;
+        text-align: left;
+      }
+
+      .menu-option-label {
+        color: #f3f3f3;
+        font-size: 13px;
+      }
+
+      .menu-option-meta {
+        color: var(--muted);
+        font-size: 12px;
       }
 
       .sidebar {
@@ -369,24 +457,49 @@
     <div class="toolbar">
       <div class="toolbar-left">
         <div class="app-title">OverusTeX</div>
-        <div id="path-pill" class="path-pill">Untitled</div>
+        <div class="toolbar-actions">
+          <button id="new-button" type="button">New</button>
+          <div class="open-menu">
+            <button
+              id="open-menu-button"
+              type="button"
+              aria-haspopup="menu"
+              aria-expanded="false"
+            >
+              Open<span class="button-caret">▼</span>
+            </button>
+            <div id="open-menu-panel" class="open-menu-panel" role="menu" hidden>
+              <button
+                id="open-file-button"
+                class="menu-option"
+                type="button"
+                role="menuitem"
+              >
+                <span class="menu-option-label">TeX File</span>
+                <span class="menu-option-meta">Open a `.tex` document</span>
+              </button>
+              <button
+                id="open-folder-button"
+                class="menu-option"
+                type="button"
+                role="menuitem"
+              >
+                <span class="menu-option-label">Folder</span>
+                <span class="menu-option-meta">Load a workspace folder</span>
+              </button>
+            </div>
+          </div>
+        </div>
       </div>
       <div class="toolbar-right">
-        <button id="new-button" type="button">New</button>
-        <button id="open-button" type="button">Open</button>
-        <button id="open-folder-button" type="button">Folder</button>
-        <button id="save-button" type="button">Save</button>
-        <button id="run-button" class="primary" type="button">Run</button>
+        <div id="path-pill" class="path-pill">Untitled</div>
       </div>
     </div>
 
-    <div class="workspace">
+    <div id="workspace" class="workspace">
       <aside class="pane sidebar">
         <div class="pane-header">
           <span class="pane-title">Explorer</span>
-          <button id="sidebar-open-folder" class="ghost" type="button">
-            Folder
-          </button>
         </div>
         <div class="sidebar-body">
           <div id="workspace-path" class="workspace-path">
@@ -396,13 +509,23 @@
         </div>
       </aside>
 
+      <div
+        class="pane-divider"
+        data-resize="sidebar"
+        role="separator"
+        aria-orientation="vertical"
+        aria-label="Resize explorer"
+      ></div>
+
       <section class="pane">
         <div class="pane-header">
           <span id="editor-title" class="pane-title">untitled.tex</span>
           <div class="panel-actions">
+            <button id="save-button" type="button">Save</button>
             <button id="save-as-button" class="ghost" type="button">
               Save As
             </button>
+            <button id="run-button" class="primary" type="button">Run</button>
           </div>
         </div>
         <div class="editor-body">
@@ -410,6 +533,14 @@
           <textarea id="editor" spellcheck="false"></textarea>
         </div>
       </section>
+
+      <div
+        class="pane-divider"
+        data-resize="preview"
+        role="separator"
+        aria-orientation="vertical"
+        aria-label="Resize preview"
+      ></div>
 
       <section class="pane">
         <div class="pane-header">
@@ -466,6 +597,7 @@
 
       const editor = document.getElementById("editor");
       const gutter = document.getElementById("gutter");
+      const workspace = document.getElementById("workspace");
       const pathPill = document.getElementById("path-pill");
       const editorTitle = document.getElementById("editor-title");
       const buildOutput = document.getElementById("build-output");
@@ -477,12 +609,140 @@
       const previewState = document.getElementById("preview-state");
       const workspacePath = document.getElementById("workspace-path");
       const workspaceTree = document.getElementById("workspace-tree");
+      const openMenu = document.querySelector(".open-menu");
+      const openMenuButton = document.getElementById("open-menu-button");
+      const openMenuPanel = document.getElementById("open-menu-panel");
+      const openFileButton = document.getElementById("open-file-button");
+      const openFolderButton = document.getElementById("open-folder-button");
+      const paneDividers = document.querySelectorAll(".pane-divider");
       const runButton = document.getElementById("run-button");
       const exportPdfButton = document.getElementById("export-pdf-button");
       const savePdfAsButton = document.getElementById("save-pdf-as-button");
+      const layout = {
+        sidebarWidth: 240,
+        previewWidth: 420,
+      };
+      const layoutBounds = {
+        dividerSize: 6,
+        minSidebar: 180,
+        minEditor: 360,
+        minPreview: 280,
+      };
 
       function send(message) {
         window.ipc.postMessage(JSON.stringify(message));
+      }
+
+      function clamp(value, min, max) {
+        return Math.min(Math.max(value, min), Math.max(min, max));
+      }
+
+      function applyWorkspaceSizes() {
+        const totalWidth = workspace.clientWidth;
+        const dividerOffset = layoutBounds.dividerSize * 2;
+        const sidebarMax =
+          totalWidth -
+          layout.previewWidth -
+          layoutBounds.minEditor -
+          dividerOffset;
+        layout.sidebarWidth = clamp(
+          layout.sidebarWidth,
+          layoutBounds.minSidebar,
+          sidebarMax
+        );
+
+        const previewMax =
+          totalWidth -
+          layout.sidebarWidth -
+          layoutBounds.minEditor -
+          dividerOffset;
+        layout.previewWidth = clamp(
+          layout.previewWidth,
+          layoutBounds.minPreview,
+          previewMax
+        );
+
+        workspace.style.setProperty(
+          "--sidebar-width",
+          `${layout.sidebarWidth}px`
+        );
+        workspace.style.setProperty(
+          "--preview-width",
+          `${layout.previewWidth}px`
+        );
+      }
+
+      function closeOpenMenu() {
+        openMenuPanel.hidden = true;
+        openMenuButton.setAttribute("aria-expanded", "false");
+      }
+
+      function toggleOpenMenu() {
+        const shouldOpen = openMenuPanel.hidden;
+        openMenuPanel.hidden = !shouldOpen;
+        openMenuButton.setAttribute("aria-expanded", String(shouldOpen));
+      }
+
+      function chooseOpenTarget(command) {
+        closeOpenMenu();
+        if (confirmDiscard()) {
+          send({ cmd: command });
+        }
+      }
+
+      function startResize(mode, handle, pointerId) {
+        const rect = workspace.getBoundingClientRect();
+        handle.classList.add("is-resizing");
+        document.body.classList.add("is-resizing");
+
+        const onPointerMove = (event) => {
+          if (mode === "sidebar") {
+            const nextWidth = event.clientX - rect.left;
+            const maxWidth =
+              rect.width -
+              layout.previewWidth -
+              layoutBounds.minEditor -
+              layoutBounds.dividerSize * 2;
+            layout.sidebarWidth = clamp(
+              nextWidth,
+              layoutBounds.minSidebar,
+              maxWidth
+            );
+          } else {
+            const nextWidth = rect.right - event.clientX;
+            const maxWidth =
+              rect.width -
+              layout.sidebarWidth -
+              layoutBounds.minEditor -
+              layoutBounds.dividerSize * 2;
+            layout.previewWidth = clamp(
+              nextWidth,
+              layoutBounds.minPreview,
+              maxWidth
+            );
+          }
+
+          applyWorkspaceSizes();
+        };
+
+        const stopResize = () => {
+          handle.classList.remove("is-resizing");
+          document.body.classList.remove("is-resizing");
+          window.removeEventListener("pointermove", onPointerMove);
+          window.removeEventListener("pointerup", stopResize);
+          window.removeEventListener("pointercancel", stopResize);
+          if (handle.hasPointerCapture?.(pointerId)) {
+            handle.releasePointerCapture(pointerId);
+          }
+        };
+
+        if (handle.setPointerCapture) {
+          handle.setPointerCapture(pointerId);
+        }
+
+        window.addEventListener("pointermove", onPointerMove);
+        window.addEventListener("pointerup", stopResize);
+        window.addEventListener("pointercancel", stopResize);
       }
 
       function lineCountFor(text) {
@@ -659,24 +919,30 @@
         }
       });
 
-      document.getElementById("open-button").addEventListener("click", () => {
-        if (confirmDiscard()) {
-          send({ cmd: "open_file" });
+      openMenuButton.addEventListener("click", (event) => {
+        event.stopPropagation();
+        toggleOpenMenu();
+      });
+
+      openFileButton.addEventListener("click", () => {
+        chooseOpenTarget("open_file");
+      });
+
+      openFolderButton.addEventListener("click", () => {
+        chooseOpenTarget("open_folder");
+      });
+
+      document.addEventListener("pointerdown", (event) => {
+        if (!openMenuPanel.hidden && !openMenu.contains(event.target)) {
+          closeOpenMenu();
         }
       });
 
-      const openFolder = () => {
-        if (confirmDiscard()) {
-          send({ cmd: "open_folder" });
+      document.addEventListener("keydown", (event) => {
+        if (event.key === "Escape" && !openMenuPanel.hidden) {
+          closeOpenMenu();
         }
-      };
-
-      document
-        .getElementById("open-folder-button")
-        .addEventListener("click", openFolder);
-      document
-        .getElementById("sidebar-open-folder")
-        .addEventListener("click", openFolder);
+      });
 
       document.getElementById("save-button").addEventListener("click", () => {
         send({ cmd: "save", contents: editor.value });
@@ -698,6 +964,12 @@
 
       savePdfAsButton.addEventListener("click", () => {
         send({ cmd: "save_pdf_as", contents: editor.value });
+      });
+
+      paneDividers.forEach((divider) => {
+        divider.addEventListener("pointerdown", (event) => {
+          startResize(divider.dataset.resize, divider, event.pointerId);
+        });
       });
 
       editor.addEventListener("input", () => {
@@ -826,6 +1098,8 @@
       syncGutter();
       syncChrome();
       updateRunState();
+      applyWorkspaceSizes();
+      window.addEventListener("resize", applyWorkspaceSizes);
       send({ cmd: "ready" });
     </script>
   </body>
