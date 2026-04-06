@@ -6,7 +6,7 @@
       name="viewport"
       content="width=device-width, initial-scale=1, maximum-scale=1"
     />
-    <title>OverusTeX</title>
+    <title>OveRusTeX</title>
     <style>
       :root {
         --bg: #1e1e1e;
@@ -20,6 +20,7 @@
         --accent-strong: #1177bb;
         --success: #89d185;
         --divider-size: 6px;
+        --log-height: 168px;
         --sidebar-width: 240px;
         --preview-width: 420px;
         --font-ui: "Segoe UI Variable Text", "Segoe UI", system-ui, sans-serif;
@@ -42,12 +43,23 @@
 
       body {
         display: grid;
-        grid-template-rows: 44px minmax(0, 1fr) 168px 26px;
+        grid-template-rows:
+          44px
+          minmax(0, 1fr)
+          var(--divider-size)
+          var(--log-height)
+          26px;
       }
 
-      body.is-resizing,
-      body.is-resizing * {
+      body.is-resizing-x,
+      body.is-resizing-x * {
         cursor: col-resize !important;
+        user-select: none !important;
+      }
+
+      body.is-resizing-y,
+      body.is-resizing-y * {
+        cursor: row-resize !important;
         user-select: none !important;
       }
 
@@ -165,6 +177,29 @@
 
       .pane-divider:hover::after,
       .pane-divider.is-resizing::after {
+        background: var(--accent-strong);
+      }
+
+      .log-divider {
+        position: relative;
+        min-width: 0;
+        cursor: row-resize;
+        touch-action: none;
+      }
+
+      .log-divider::after {
+        content: "";
+        position: absolute;
+        left: 0;
+        right: 0;
+        top: calc(50% - 0.5px);
+        height: 1px;
+        background: var(--border);
+        transition: background 120ms ease;
+      }
+
+      .log-divider:hover::after,
+      .log-divider.is-resizing::after {
         background: var(--accent-strong);
       }
 
@@ -410,7 +445,6 @@
         display: grid;
         grid-template-rows: 34px minmax(0, 1fr);
         min-height: 0;
-        border-top: 1px solid var(--border);
         background: #161616;
       }
 
@@ -456,7 +490,7 @@
   <body>
     <div class="toolbar">
       <div class="toolbar-left">
-        <div class="app-title">OverusTeX</div>
+        <div class="app-title">OveRusTeX</div>
         <div class="toolbar-actions">
           <button id="new-button" type="button">New</button>
           <div class="open-menu">
@@ -570,6 +604,14 @@
       </section>
     </div>
 
+    <div
+      id="log-divider"
+      class="log-divider"
+      role="separator"
+      aria-orientation="horizontal"
+      aria-label="Resize build output"
+    ></div>
+
     <section class="log-panel">
       <div class="log-header">
         <span>Build Output</span>
@@ -615,18 +657,24 @@
       const openFileButton = document.getElementById("open-file-button");
       const openFolderButton = document.getElementById("open-folder-button");
       const paneDividers = document.querySelectorAll(".pane-divider");
+      const logDivider = document.getElementById("log-divider");
       const runButton = document.getElementById("run-button");
       const exportPdfButton = document.getElementById("export-pdf-button");
       const savePdfAsButton = document.getElementById("save-pdf-as-button");
       const layout = {
+        logHeight: 168,
         sidebarWidth: 240,
         previewWidth: 420,
       };
       const layoutBounds = {
         dividerSize: 6,
+        toolbarHeight: 44,
+        statusbarHeight: 26,
+        minLog: 100,
         minSidebar: 180,
         minEditor: 360,
         minPreview: 280,
+        minWorkspace: 220,
       };
 
       function send(message) {
@@ -672,6 +720,22 @@
         );
       }
 
+      function applyLogHeight() {
+        const totalHeight = document.body.clientHeight;
+        const reservedHeight =
+          layoutBounds.toolbarHeight +
+          layoutBounds.statusbarHeight +
+          layoutBounds.dividerSize;
+        const maxLogHeight =
+          totalHeight - reservedHeight - layoutBounds.minWorkspace;
+        layout.logHeight = clamp(
+          layout.logHeight,
+          layoutBounds.minLog,
+          maxLogHeight
+        );
+        document.body.style.setProperty("--log-height", `${layout.logHeight}px`);
+      }
+
       function closeOpenMenu() {
         openMenuPanel.hidden = true;
         openMenuButton.setAttribute("aria-expanded", "false");
@@ -693,7 +757,7 @@
       function startResize(mode, handle, pointerId) {
         const rect = workspace.getBoundingClientRect();
         handle.classList.add("is-resizing");
-        document.body.classList.add("is-resizing");
+        document.body.classList.add("is-resizing-x");
 
         const onPointerMove = (event) => {
           if (mode === "sidebar") {
@@ -727,7 +791,44 @@
 
         const stopResize = () => {
           handle.classList.remove("is-resizing");
-          document.body.classList.remove("is-resizing");
+          document.body.classList.remove("is-resizing-x");
+          window.removeEventListener("pointermove", onPointerMove);
+          window.removeEventListener("pointerup", stopResize);
+          window.removeEventListener("pointercancel", stopResize);
+          if (handle.hasPointerCapture?.(pointerId)) {
+            handle.releasePointerCapture(pointerId);
+          }
+        };
+
+        if (handle.setPointerCapture) {
+          handle.setPointerCapture(pointerId);
+        }
+
+        window.addEventListener("pointermove", onPointerMove);
+        window.addEventListener("pointerup", stopResize);
+        window.addEventListener("pointercancel", stopResize);
+      }
+
+      function startLogResize(handle, pointerId) {
+        const bodyRect = document.body.getBoundingClientRect();
+        handle.classList.add("is-resizing");
+        document.body.classList.add("is-resizing-y");
+
+        const onPointerMove = (event) => {
+          const nextHeight = bodyRect.bottom - layoutBounds.statusbarHeight - event.clientY;
+          const maxHeight =
+            bodyRect.height -
+            layoutBounds.toolbarHeight -
+            layoutBounds.statusbarHeight -
+            layoutBounds.dividerSize -
+            layoutBounds.minWorkspace;
+          layout.logHeight = clamp(nextHeight, layoutBounds.minLog, maxHeight);
+          applyLogHeight();
+        };
+
+        const stopResize = () => {
+          handle.classList.remove("is-resizing");
+          document.body.classList.remove("is-resizing-y");
           window.removeEventListener("pointermove", onPointerMove);
           window.removeEventListener("pointerup", stopResize);
           window.removeEventListener("pointercancel", stopResize);
@@ -763,7 +864,7 @@
         pathPill.textContent = state.displayPath;
         editorTitle.textContent = state.fileName + (state.dirty ? " *" : "");
         document.title =
-          (state.dirty ? "• " : "") + state.fileName + " - OverusTeX";
+          (state.dirty ? "• " : "") + state.fileName + " - OveRusTeX";
       }
 
       function setStatus(message, detail = "") {
@@ -972,6 +1073,10 @@
         });
       });
 
+      logDivider.addEventListener("pointerdown", (event) => {
+        startLogResize(logDivider, event.pointerId);
+      });
+
       editor.addEventListener("input", () => {
         state.dirty = true;
         syncChrome();
@@ -1099,7 +1204,11 @@
       syncChrome();
       updateRunState();
       applyWorkspaceSizes();
-      window.addEventListener("resize", applyWorkspaceSizes);
+      applyLogHeight();
+      window.addEventListener("resize", () => {
+        applyWorkspaceSizes();
+        applyLogHeight();
+      });
       send({ cmd: "ready" });
     </script>
   </body>

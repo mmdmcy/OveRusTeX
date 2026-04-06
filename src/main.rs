@@ -28,7 +28,7 @@ use wry::{
 
 const APP_URL: &str = "overustex://app/index.html";
 const UI_HTML: &str = include_str!("ui.html");
-const APP_STORAGE_DIR_NAME: &str = "OverusTeX";
+const APP_STORAGE_DIR_NAME: &str = "OveRusTeX";
 const LEGACY_WORKSPACE_DIR_NAME: &str = ".overustex";
 const HISTORY_LIMIT: usize = 16;
 const PREVIEW_LIMIT: usize = 6;
@@ -42,14 +42,14 @@ const DEFAULT_TEMPLATE: &str = r#"\documentclass{article}
 \usepackage[utf8]{inputenc}
 \usepackage[T1]{fontenc}
 
-\title{OverusTeX}
+\title{OveRusTeX}
 \author{}
 \date{\today}
 
 \begin{document}
 \maketitle
 
-Hello from OverusTeX.
+Hello from OveRusTeX.
 
 \end{document}
 "#;
@@ -181,7 +181,7 @@ fn main() -> Result<()> {
     let proxy = event_loop.create_proxy();
 
     let window = WindowBuilder::new()
-        .with_title("OverusTeX")
+        .with_title("OveRusTeX")
         .with_inner_size(LogicalSize::new(1440.0, 920.0))
         .with_min_inner_size(LogicalSize::new(960.0, 680.0))
         .build(&event_loop)
