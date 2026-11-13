@@ -65,3 +65,5 @@ According to the `wry` platform notes, Linux builds require WebKitGTK. On Debian
 ```bash
 sudo apt install libgtk-3-dev libwebkit2gtk-4.1-dev
 ```
+
+Dependabot's glib 0.18 and rand 0.7 alerts come from tao/wry, whose newest release still pins gtk 0.18; they wait for upstream.
