@@ -1,4 +1,5 @@
-/target
+/overustex
+/overustex.exe
 /.overustex
 *.aux
 *.log

@@ -1,12 +1,11 @@
 # OverusTeX
 
-A fast desktop LaTeX editor in Rust with:
+A fast, small LaTeX editor that runs in your browser, written in Go with the standard library only:
 
 - a clean split layout with workspace explorer, editor, and preview
-- a native desktop shell with a lightweight webview UI
 - a one-click LaTeX build flow for previewing and exporting PDFs
 - internal preview/build caches managed by the app instead of hidden folders next to your `.tex`
-- CI for Windows, macOS, and Linux builds
+- one self-contained program for Windows, macOS, and Linux, with nothing to install besides TeX
 
 ## Features
 
@@ -15,42 +14,50 @@ A fast desktop LaTeX editor in Rust with:
 - a PDF preview pane on the right
 - `Run` builds an unsaved working copy instead of silently saving your `.tex`
 - opening `.tex` files from nested folders keeps the current workspace root stable
-- an embedded PDF preview on the right
 - quick `Export PDF` and `Save PDF As` actions
 - build output at the bottom
+- `latexmk` when Perl is available, otherwise `pdflatex` twice; MiKTeX-friendly
 
-It is built with `tao`, `wry`, and MiKTeX-friendly command execution, keeping the stack intentionally small and responsive.
+## How it runs
 
-## Platform Status
+OverusTeX is one program that serves its editor page on `127.0.0.1` at a free port and opens it in your default browser. It prints the address too, so you can open it yourself (`--no-browser` skips opening a browser). Open and save dialogs are a small file picker inside the page, the same on every OS.
 
-- Windows: actively tested in development and the main target right now.
-- macOS: intended to work through `wry` + WebKit and covered by CI compile checks.
-- Linux: intended to work through `wry` + WebKitGTK and covered by CI compile checks.
+It stops when you press **Quit**, or when no OverusTeX tab has been open for a minute (`--idle 5m` changes that). An open tab keeps a live connection to the program; closing the tab ends it.
 
-Runtime behavior on macOS and Linux still needs real-world testing by contributors. The codebase is being kept cross-platform where practical, and the CI matrix is there to keep that direction honest.
+Security: the page and every request need a random token that only the address OverusTeX opens carries (it becomes an HttpOnly, SameSite=Strict cookie), and requests with a foreign `Host` or `Origin` are refused, so other web pages in the same browser cannot reach your files through it. The explorer opens files inside the workspace only (no `..` or symlink escapes); the picker goes wherever you browse, as a native dialog would.
 
 ## Run
 
-```powershell
-cargo run
+```sh
+go run .
 ```
+
+Options: `--no-browser`, `--port N` (default: a free port), `--idle DURATION` (default `1m`).
 
 ## Build
 
-```powershell
-cargo build --release
+```sh
+go build -o overustex .
 ```
 
-The binary will be at:
+On Windows, `go build -o overustex.exe .` gives a program that shows its address in a console window; `go build -ldflags -H=windowsgui -o overustex.exe .` gives one without a console window.
 
-```text
-target\release\overustex.exe
+Cross-compiling needs no C toolchain, for example `CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go build -o overustex.exe .`.
+
+## Test
+
+```sh
+go vet ./...
+go test ./...
 ```
+
+The tests need no TeX: they put small stand-in `latexmk`, `perl` and `pdflatex` scripts on `PATH` (POSIX systems only; on Windows those tests are skipped).
 
 ## Notes
 
 - `Run` does not save your `.tex` file. It compiles a temporary working copy inside OverusTeX's cache storage instead of creating hidden folders next to your source files.
-- OverusTeX keeps short-term snapshot backups in that internal cache and prunes old entries automatically.
+- OverusTeX keeps short-term snapshot backups in that internal cache and prunes old entries automatically. The cache is `OveRusTeX/documents` in your user cache folder (`~/.cache` or `$XDG_CACHE_HOME` on Linux, `~/Library/Caches` on macOS, `%LocalAppData%` on Windows).
+- At start it opens `OveRusTeX/main.tex` in your Documents folder when that file exists.
 - `Save` writes the current file. `Save As` lets you choose a different `.tex` file.
 - `Export PDF` writes a PDF next to the current `.tex` file, or to `main.pdf` in the workspace when the file is still untitled.
 - `Save PDF As` lets you choose a PDF target explicitly.
@@ -58,12 +65,10 @@ target\release\overustex.exe
 - `Ctrl+S` saves.
 - `Ctrl+Enter` or `F5` builds.
 
-## Linux Dependencies
+## Platform Status
 
-According to the `wry` platform notes, Linux builds require WebKitGTK. On Debian or Ubuntu systems that means at least:
+- Windows: the main target. It builds and its tests run in CI; the Go version has not yet been tried by hand on Windows.
+- macOS: builds and tests run in CI; runtime behaviour still needs real-world testing by contributors.
+- Linux: builds and tests run in CI, and it has been driven end to end in a browser with stand-in TeX tools; a run with a real TeX installation still needs testing.
 
-```bash
-sudo apt install libgtk-3-dev libwebkit2gtk-4.1-dev
-```
-
-Dependabot's glib 0.18 and rand 0.7 alerts come from tao/wry, whose newest release still pins gtk 0.18; they wait for upstream.
+Earlier versions were written in Rust with a native window (tao and wry); they remain in the git history.

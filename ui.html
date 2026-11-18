@@ -7,6 +7,7 @@
       content="width=device-width, initial-scale=1, maximum-scale=1"
     />
     <title>OveRusTeX</title>
+    <link rel="icon" href="data:," />
     <style>
       :root {
         --bg: #1e1e1e;
@@ -485,6 +486,83 @@
       .status-detail {
         color: var(--muted);
       }
+
+      .picker-backdrop {
+        position: fixed;
+        inset: 0;
+        z-index: 20;
+        display: grid;
+        place-items: center;
+        padding: 24px;
+        background: rgba(0, 0, 0, 0.5);
+      }
+
+      .picker-backdrop[hidden] {
+        display: none;
+      }
+
+      .picker {
+        display: grid;
+        grid-template-rows: auto auto auto minmax(0, 1fr) auto;
+        gap: 10px;
+        width: min(720px, 100%);
+        height: min(560px, 100%);
+        padding: 14px;
+        border: 1px solid var(--border);
+        border-radius: 10px;
+        background: #1d1d1f;
+        box-shadow: 0 14px 28px rgba(0, 0, 0, 0.34);
+      }
+
+      .picker-title {
+        color: #f3f3f3;
+        font-size: 14px;
+        font-weight: 600;
+      }
+
+      .picker-places,
+      .picker-pathbar,
+      .picker-foot {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        min-width: 0;
+      }
+
+      .picker-places {
+        flex-wrap: wrap;
+      }
+
+      .picker input {
+        flex: 1 1 auto;
+        min-width: 0;
+        min-height: 28px;
+        padding: 0 8px;
+        border: 1px solid var(--border);
+        border-radius: 5px;
+        background: var(--panel);
+        color: var(--text);
+        font: inherit;
+      }
+
+      .picker-list {
+        overflow: auto;
+        padding: 4px;
+        border: 1px solid var(--border);
+        border-radius: 7px;
+        background: var(--panel);
+      }
+
+      .picker-list .tree-item[aria-selected="true"] {
+        background: rgba(14, 99, 156, 0.45);
+      }
+
+      .picker-note {
+        flex: 1 1 auto;
+        min-width: 0;
+        color: var(--muted);
+        font-size: 12px;
+      }
     </style>
   </head>
   <body>
@@ -527,6 +605,7 @@
       </div>
       <div class="toolbar-right">
         <div id="path-pill" class="path-pill">Untitled</div>
+        <button id="quit-button" class="ghost" type="button">Quit</button>
       </div>
     </div>
 
@@ -625,6 +704,24 @@
       <div id="status-detail" class="status-detail">MiKTeX on Windows 11</div>
     </footer>
 
+    <div id="picker" class="picker-backdrop" hidden>
+      <div class="picker" role="dialog" aria-modal="true" aria-labelledby="picker-title">
+        <div id="picker-title" class="picker-title">Open</div>
+        <div id="picker-places" class="picker-places"></div>
+        <div class="picker-pathbar">
+          <button id="picker-up" type="button" title="Parent folder">Up</button>
+          <input id="picker-path" spellcheck="false" aria-label="Folder" />
+        </div>
+        <div id="picker-list" class="picker-list" role="listbox"></div>
+        <div class="picker-foot">
+          <input id="picker-name" spellcheck="false" aria-label="File name" hidden />
+          <span id="picker-note" class="picker-note"></span>
+          <button id="picker-cancel" class="ghost" type="button">Cancel</button>
+          <button id="picker-ok" class="primary" type="button">Open</button>
+        </div>
+      </div>
+    </div>
+
     <script>
       const state = {
         fileName: "untitled.tex",
@@ -677,8 +774,18 @@
         minWorkspace: 220,
       };
 
+      function postJSON(url, body) {
+        return fetch(url, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(body),
+        });
+      }
+
       function send(message) {
-        window.ipc.postMessage(JSON.stringify(message));
+        postJSON("/ipc", message).catch(() => {
+          setStatus("Not connected", "OverusTeX is not running. Start it again.");
+        });
       }
 
       function clamp(value, min, max) {
@@ -949,6 +1056,17 @@
         editor.focus();
       }
 
+      function treeLabel(kind, name) {
+        const fragment = document.createDocumentFragment();
+        const icon = document.createElement("span");
+        icon.className = "tree-icon";
+        icon.textContent = kind;
+        const label = document.createElement("span");
+        label.textContent = name;
+        fragment.append(icon, label);
+        return fragment;
+      }
+
       function makeTreeItem(entry) {
         if (entry.is_dir) {
           const folder = document.createElement("details");
@@ -960,7 +1078,7 @@
           button.type = "button";
           button.className = "tree-item";
           button.dataset.kind = entry.kind;
-          button.innerHTML = `<span class="tree-icon">dir</span><span>${entry.name}</span>`;
+          button.append(treeLabel("dir", entry.name));
           summary.appendChild(button);
           folder.appendChild(summary);
 
@@ -976,7 +1094,7 @@
         button.className = "tree-item";
         button.dataset.kind = entry.kind;
         button.draggable = true;
-        button.innerHTML = `<span class="tree-icon">${entry.kind}</span><span>${entry.name}</span>`;
+        button.append(treeLabel(entry.kind, entry.name));
 
         button.addEventListener("click", () => {
           if (entry.kind === "tex" && confirmDiscard()) {
@@ -1188,6 +1306,10 @@
             }
             break;
 
+          case "pick":
+            openPicker(message);
+            break;
+
           case "status":
             setStatus(message.message, message.detail || "");
             if (message.log) {
@@ -1209,7 +1331,249 @@
         applyWorkspaceSizes();
         applyLogHeight();
       });
-      send({ cmd: "ready" });
+
+      // The in-app picker, in place of native file dialogs. The server asks
+      // for a path with a "pick" event; the answer is the same command with
+      // "path" set.
+      const pickerEl = document.getElementById("picker");
+      const pickerTitle = document.getElementById("picker-title");
+      const pickerPlaces = document.getElementById("picker-places");
+      const pickerPath = document.getElementById("picker-path");
+      const pickerList = document.getElementById("picker-list");
+      const pickerName = document.getElementById("picker-name");
+      const pickerNote = document.getElementById("picker-note");
+      const pickerOk = document.getElementById("picker-ok");
+      const pickerModes = {
+        open_file: { title: "Open TeX file", ok: "Open", ext: ".tex" },
+        open_folder: { title: "Open folder", ok: "Open folder", ext: null },
+        save_tex: { title: "Save TeX file", ok: "Save", ext: ".tex" },
+        save_pdf: { title: "Save PDF as", ok: "Save", ext: ".pdf" },
+      };
+      const picker = { request: null, listing: null, selected: null, overwrite: null };
+
+      function pickerMode() {
+        return pickerModes[picker.request.mode];
+      }
+
+      function isSaveMode() {
+        return picker.request.mode === "save_tex" || picker.request.mode === "save_pdf";
+      }
+
+      function joinPath(dir, name) {
+        const sep = picker.listing.sep;
+        return dir.endsWith(sep) ? dir + name : dir + sep + name;
+      }
+
+      function openPicker(request) {
+        picker.request = request;
+        picker.selected = null;
+        picker.overwrite = null;
+        const mode = pickerMode();
+        pickerTitle.textContent = mode.title;
+        pickerOk.textContent = mode.ok;
+        pickerName.hidden = !isSaveMode();
+        pickerName.value = request.suggested_name || "";
+        pickerNote.textContent = "";
+        pickerEl.hidden = false;
+        pickerLoad(request.start_dir || "");
+        (isSaveMode() ? pickerName : pickerOk).focus();
+      }
+
+      function closePicker() {
+        pickerEl.hidden = true;
+        picker.request = null;
+        editor.focus();
+      }
+
+      async function pickerLoad(path) {
+        try {
+          const response = await postJSON("/api/list", { path });
+          if (!response.ok) {
+            pickerNote.textContent = await response.text();
+            return;
+          }
+          picker.listing = await response.json();
+          picker.selected = null;
+          picker.overwrite = null;
+          pickerNote.textContent = "";
+          renderPicker();
+        } catch (error) {
+          pickerNote.textContent = error.message;
+        }
+      }
+
+      function renderPicker() {
+        const listing = picker.listing;
+        const ext = pickerMode().ext;
+        pickerPath.value = listing.path;
+        document.getElementById("picker-up").disabled = !listing.parent;
+
+        pickerPlaces.replaceChildren();
+        listing.roots.forEach((root) => {
+          const button = document.createElement("button");
+          button.type = "button";
+          button.className = "ghost";
+          button.textContent = root.label;
+          button.title = root.path;
+          button.addEventListener("click", () => pickerLoad(root.path));
+          pickerPlaces.appendChild(button);
+        });
+
+        pickerList.replaceChildren();
+        const shown = listing.entries.filter(
+          (entry) => entry.is_dir || (ext && entry.name.toLowerCase().endsWith(ext))
+        );
+        if (shown.length === 0) {
+          const empty = document.createElement("div");
+          empty.className = "workspace-path";
+          empty.textContent = "Nothing to show here.";
+          pickerList.appendChild(empty);
+        }
+        shown.forEach((entry) => {
+          const button = document.createElement("button");
+          button.type = "button";
+          button.className = "tree-item";
+          button.setAttribute("role", "option");
+          button.dataset.kind = entry.is_dir ? "dir" : ext.slice(1);
+          button.append(treeLabel(entry.is_dir ? "dir" : ext.slice(1), entry.name));
+          button.addEventListener("click", () => {
+            if (entry.is_dir) {
+              pickerLoad(entry.path);
+              return;
+            }
+            picker.selected = entry.path;
+            picker.overwrite = null;
+            pickerList
+              .querySelectorAll(".tree-item")
+              .forEach((item) => item.setAttribute("aria-selected", String(item === button)));
+            if (isSaveMode()) {
+              pickerName.value = entry.name;
+            }
+          });
+          button.addEventListener("dblclick", () => {
+            if (!entry.is_dir) {
+              pickerChoose();
+            }
+          });
+          pickerList.appendChild(button);
+        });
+      }
+
+      function pickerChoose() {
+        if (!picker.request || !picker.listing) {
+          return;
+        }
+        const request = picker.request;
+        const listing = picker.listing;
+        let path;
+        if (request.mode === "open_folder") {
+          path = listing.path;
+        } else if (request.mode === "open_file") {
+          if (!picker.selected) {
+            pickerNote.textContent = "Choose a .tex file.";
+            return;
+          }
+          path = picker.selected;
+        } else {
+          let name = pickerName.value.trim();
+          if (!name) {
+            pickerNote.textContent = "Type a file name.";
+            return;
+          }
+          if (/[\\/]/.test(name) || name === "." || name === "..") {
+            pickerNote.textContent = "A file name only; pick the folder above.";
+            return;
+          }
+          const ext = pickerMode().ext;
+          if (request.mode === "save_pdf" ? !name.toLowerCase().endsWith(ext) : !name.includes(".")) {
+            name += ext;
+          }
+          const existing = listing.entries.find((entry) => entry.name === name);
+          if (existing && existing.is_dir) {
+            pickerNote.textContent = `${name} is a folder.`;
+            return;
+          }
+          path = joinPath(listing.path, name);
+          if (existing && picker.overwrite !== path) {
+            picker.overwrite = path;
+            pickerNote.textContent = `${name} exists. Press ${pickerOk.textContent} again to replace it.`;
+            return;
+          }
+        }
+        closePicker();
+        const message = { cmd: request.cmd, path };
+        if (isSaveCommand(request.cmd)) {
+          message.contents = editor.value;
+        }
+        send(message);
+      }
+
+      function isSaveCommand(cmd) {
+        return cmd === "save" || cmd === "save_as" || cmd === "save_pdf_as";
+      }
+
+      document.getElementById("picker-up").addEventListener("click", () => {
+        if (picker.listing && picker.listing.parent) {
+          pickerLoad(picker.listing.parent);
+        }
+      });
+      document.getElementById("picker-cancel").addEventListener("click", closePicker);
+      pickerOk.addEventListener("click", pickerChoose);
+      pickerPath.addEventListener("keydown", (event) => {
+        if (event.key === "Enter") {
+          event.preventDefault();
+          pickerLoad(pickerPath.value);
+        }
+      });
+      pickerName.addEventListener("keydown", (event) => {
+        if (event.key === "Enter") {
+          event.preventDefault();
+          pickerChoose();
+        }
+      });
+      pickerName.addEventListener("input", () => {
+        picker.overwrite = null;
+      });
+      pickerEl.addEventListener("keydown", (event) => {
+        if (event.key === "Escape") {
+          event.preventDefault();
+          event.stopPropagation();
+          closePicker();
+        }
+      });
+
+      document.getElementById("quit-button").addEventListener("click", () => {
+        if (confirmDiscard()) {
+          quitting = true;
+          send({ cmd: "quit" });
+        }
+      });
+
+      // Events from the server arrive over one stream; while it is open the
+      // server knows this tab is here. "ready" goes once, on the first
+      // connection, so a reconnect never reloads the document.
+      let readySent = false;
+      let quitting = false;
+      const events = new EventSource("/events");
+      events.onmessage = (event) => {
+        window.overustexReceive(JSON.parse(event.data));
+      };
+      events.onopen = () => {
+        if (!readySent) {
+          readySent = true;
+          send({ cmd: "ready" });
+        } else {
+          setStatus("Reconnected", state.displayPath);
+        }
+      };
+      events.onerror = () => {
+        if (quitting) {
+          events.close();
+          setStatus("OverusTeX stopped", "You can close this tab.");
+          return;
+        }
+        setStatus("Not connected", "Waiting for OverusTeX. If it stopped, start it again.");
+      };
     </script>
   </body>
 </html>
