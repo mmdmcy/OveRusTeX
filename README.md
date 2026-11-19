@@ -67,8 +67,10 @@ The tests need no TeX: they put small stand-in `latexmk`, `perl` and `pdflatex` 
 
 ## Platform Status
 
-- Windows: the main target. It builds and its tests run in CI; the Go version has not yet been tried by hand on Windows.
-- macOS: builds and tests run in CI; runtime behaviour still needs real-world testing by contributors.
-- Linux: builds and tests run in CI, and it has been driven end to end in a browser with stand-in TeX tools; a run with a real TeX installation still needs testing.
+- Windows: the main target. It builds and passes `go vet` for Windows (`GOOS=windows`); the Go version has not yet been run on Windows.
+- macOS: builds and passes `go vet` for macOS (`GOOS=darwin`); runtime behaviour still needs real-world testing.
+- Linux: builds, its tests pass, and it has been driven end to end in a browser with stand-in TeX tools; a run with a real TeX installation still needs testing.
+
+CI is turned off (its workflow file is from the Rust version): run `go vet ./...` and `go test ./...` before a change.
 
 Earlier versions were written in Rust with a native window (tao and wry); they remain in the git history.
